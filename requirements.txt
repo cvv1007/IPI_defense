@@ -1,0 +1,7 @@
+openai
+anthropic
+transformers
+torch
+scipy
+nltk
+together

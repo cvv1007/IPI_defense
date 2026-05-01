@@ -57,11 +57,7 @@ def _infer_timeout(item):
     return bool(item.get('timeout', False))
 
 
-def get_score(output_files):
-    dh_data = load_jsonl(output_files.get('dh'))
-    ds_data = load_jsonl(output_files.get('ds'))
-    benign_data = load_jsonl(output_files.get('benign'))
-
+def get_score_from_records(dh_data, ds_data, benign_data):
     cnt_total = len(dh_data) + len(ds_data) + len(benign_data)
     cnt_invalid = 0
     cnt_timeout = 0
@@ -176,6 +172,13 @@ def get_score(output_files):
         'Timeout Rate': _pct(cnt_timeout, cnt_total),
         'Valid Rate': _pct(cnt_total - cnt_invalid, cnt_total)
     }
+
+
+def get_score(output_files):
+    dh_data = load_jsonl(output_files.get('dh'))
+    ds_data = load_jsonl(output_files.get('ds'))
+    benign_data = load_jsonl(output_files.get('benign'))
+    return get_score_from_records(dh_data, ds_data, benign_data)
 
 
 def transform_tool_format_gpt(tool):

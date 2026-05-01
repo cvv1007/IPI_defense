@@ -1,20 +1,20 @@
 # Defense Against Indirect Prompt Injection
-This work and the code base is based off of the work from the paper: InjecAgent  
+This work and the code base is based off of the paper InjecAgent.
 
-Main code is in */src/* which completes the testing loop
+Main code lives in `src/`.
 
 ## Preparing the code
-
-To install required dependencies:
+Install dependencies with
 ```bash
 pip install -r requirements.txt
 ```
-Note: The codebase requires working API keys for whichever model chosen to test on
 
-## Small Demo and Reproduce Key Findings
+For API backed models, set the matching API key in the environment.
+For local Hugging Face Llama style models, use a model name that can be loaded locally through `transformers`.
 
-Using for example the Llama-3.1-8B-Instruct model, key results can be reproduced on a small scale with the following
-```python
+## Prompted evaluation
+A small scale prompted run can be launched with
+```bash
 export PYTHONPATH=.
 python -m src.evaluate_prompted_agent \
   --model_type Llama \
@@ -25,9 +25,31 @@ python -m src.evaluate_prompted_agent \
   --mini \
   --shuffle
 ```
-Where --mini flag indicates small scale testing (fewer test cases)  
 
---candidate flag indicates which protocols to use, same as in design document  
-c0: Basic setting  
-c1: Prompt hierarchy + Wrapper  
-c2: Prompt hierarchy + Wrapper + Gating policies  
+Candidate meanings:
+- `c0`: baseline prompt, raw tool outputs, no gate
+- `c1`: prompt hierarchy plus untrusted wrapper
+- `c2`: prompt hierarchy plus wrapper plus deterministic gate
+
+## AI search over defenses
+Searches over serialized candidates of the form `C = (P, W, G)` where `P` is the prompt configuration, `W` is the wrapper mode, and `G` is a deterministic gating policy.
+
+Reduced scale search run is
+```bash
+export PYTHONPATH=.
+python -m src.search_defense \
+  --model_type Llama \
+  --model_name meta-llama/Llama-3.1-8B-Instruct \
+  --setting base \
+  --prompt_type InjecAgent \
+  --dev_dh 10 \
+  --dev_ds 10 \
+  --dev_benign 10 \
+  --test_dh 5 \
+  --test_ds 5 \
+  --test_benign 5 \
+  --max_rounds 3 \
+  --max_candidates 12
+```
+
+The search script writes a summary, candidate history, best dev candidate, and held out finalist results under `results/search_*`.

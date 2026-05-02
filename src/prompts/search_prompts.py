@@ -7,6 +7,7 @@ Never rewrite the full base prompt. Only return JSON.
 
 SEARCH_USER_PROMPT = """
 You are given a parent candidate, its dev metrics, and a few failure traces.
+These are the exact inputs you should base your edit on.
 Propose exactly one child candidate with at most {max_atomic_edits} atomic edits.
 
 Allowed atomic edits:

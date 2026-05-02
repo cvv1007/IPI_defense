@@ -150,6 +150,16 @@ def _safe_json_loads(text):
         return None
 
 
+def _make_jsonable(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _make_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_make_jsonable(v) for v in value]
+    return str(value)
+
+
 def _format_failure_traces(records, limit=3):
     failures = []
     for item in records['dh']:
@@ -250,7 +260,8 @@ def _normalize_child(parent_candidate, child_candidate, round_idx, child_idx):
 
 
 def _build_llm_prompt(parent_entry, max_atomic_edits):
-    return SEARCH_USER_PROMPT.format(
+    failure_traces = _format_failure_traces(parent_entry['records'])
+    prompt = SEARCH_USER_PROMPT.format(
         max_atomic_edits=max_atomic_edits,
         prompt_hier_options=PROMPT_HIER_OPTIONS,
         prompt_form_options=PROMPT_FORM_OPTIONS,
@@ -260,28 +271,48 @@ def _build_llm_prompt(parent_entry, max_atomic_edits):
         gate_action_options=GATE_ACTION_OPTIONS,
         parent_candidate=json.dumps(parent_entry['candidate'], indent=2),
         parent_metrics=json.dumps(parent_entry['scores'], indent=2),
-        failure_traces=json.dumps(_format_failure_traces(parent_entry['records']), indent=2)
+        failure_traces=json.dumps(failure_traces, indent=2)
     )
+    return prompt, failure_traces
 
 
 def propose_with_llm(search_model, parent_entry, round_idx, max_atomic_edits, child_budget):
+    prompt, failure_traces = _build_llm_prompt(parent_entry, max_atomic_edits)
+    transcript = {
+        'round': round_idx,
+        'parent_candidate_id': parent_entry['candidate']['candidate_id'],
+        'parent_signature': parent_entry['signature'],
+        'system_prompt': SEARCH_SYSTEM_PROMPT.strip(),
+        'user_prompt': prompt,
+        'parent_candidate': _make_jsonable(parent_entry['candidate']),
+        'parent_metrics': _make_jsonable(parent_entry['scores']),
+        'failure_traces': _make_jsonable(failure_traces),
+        'search_model_used': bool(search_model is not None),
+    }
     if search_model is None:
-        return []
-    prompt = _build_llm_prompt(parent_entry, max_atomic_edits)
+        transcript['prepared_input'] = None
+        transcript['raw_response'] = None
+        transcript['parsed_payload'] = None
+        transcript['status'] = 'search_model_disabled'
+        return [], transcript
     model_input = search_model.prepare_input(SEARCH_SYSTEM_PROMPT, prompt)
+    transcript['prepared_input'] = _make_jsonable(model_input)
     raw = search_model.call_model(model_input)
+    transcript['raw_response'] = raw
     json_like = extract_json_like(raw or '')
-    if json_like is None:
-        return []
-    payload = _safe_json_loads(json_like)
+    payload = _safe_json_loads(json_like) if json_like is not None else None
+    transcript['parsed_payload'] = _make_jsonable(payload)
     if payload is None or 'candidate' not in payload:
-        return []
+        transcript['status'] = 'parse_failed'
+        return [], transcript
     child = _normalize_child(parent_entry['candidate'], payload['candidate'], round_idx, 0)
     child['parent_id'] = parent_entry['candidate']['candidate_id']
     child['proposal_source'] = 'llm'
     child['proposal_edits'] = payload.get('edits', [])
     child['proposal_rationale'] = payload.get('rationale', '')
-    return [child][:child_budget]
+    transcript['status'] = 'ok'
+    transcript['proposed_candidate'] = _make_jsonable(child)
+    return [child][:child_budget], transcript
 
 
 def _set_gate_mode(candidate, enabled):
@@ -300,7 +331,7 @@ def _set_gate_mode(candidate, enabled):
     return normalize_candidate(child)
 
 
-def heuristic_proposals(parent_entry, child_budget):
+def heuristic_proposals(parent_entry, child_budget, bmin):
     candidate = normalize_candidate(parent_entry['candidate'])
     view = _score_view(parent_entry['scores'])
     children = []
@@ -332,7 +363,7 @@ def heuristic_proposals(parent_entry, child_budget):
             child['gate']['sensitivity_threshold'] = max(1, child['gate']['sensitivity_threshold'] - 1)
             add(child, 'tighten gate thresholds')
 
-    if view['bsr'] is not None and view['bsr'] < 60.0:
+    if view['bsr'] is not None and view['bsr'] < bmin:
         if candidate['gate']['mode'] != 'none':
             child = deepcopy(candidate)
             child['gate']['action'] = 'confirm'
@@ -483,7 +514,10 @@ def main():
 
     cache = {}
     history = []
+    proposer_inputs = []
     evaluated = []
+
+    print(f"Search thresholds: BSR >= {args.bmin:.1f}, Invalid Rate <= {args.imax:.1f}, ASR regression <= {args.delta_asr:.1f}")
 
     seed_candidates = assign_candidate_ids(make_seed_candidates(), 0)
     for candidate in seed_candidates:
@@ -516,8 +550,9 @@ def main():
             child_budget = min(args.children_per_parent, max(0, args.max_candidates - len(evaluated) - len(proposed)))
             if child_budget <= 0:
                 break
-            llm_children = propose_with_llm(search_model, parent, round_idx, args.max_atomic_edits, child_budget)
-            heuristic_children = heuristic_proposals(parent, child_budget)
+            llm_children, llm_transcript = propose_with_llm(search_model, parent, round_idx, args.max_atomic_edits, child_budget)
+            proposer_inputs.append(llm_transcript)
+            heuristic_children = heuristic_proposals(parent, child_budget, args.bmin)
             for child in llm_children + heuristic_children:
                 child = normalize_candidate(child)
                 child['parent_id'] = parent['candidate']['candidate_id']
@@ -608,6 +643,7 @@ def main():
 
     save_json(os.path.join(args.output_dir, 'search_summary.json'), summary)
     save_jsonl(os.path.join(args.output_dir, 'candidate_history.jsonl'), history)
+    save_jsonl(os.path.join(args.output_dir, 'proposer_inputs.jsonl'), proposer_inputs)
     save_json(os.path.join(args.output_dir, 'best_dev_candidate.json'), finalists[0] if finalists else {})
     save_json(os.path.join(args.output_dir, 'heldout_results.json'), heldout_results)
 

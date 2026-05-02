@@ -5,3 +5,4 @@ torch
 scipy
 nltk
 together
+tqdm
